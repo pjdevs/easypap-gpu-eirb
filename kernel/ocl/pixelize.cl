@@ -23,3 +23,25 @@ __kernel void pixelize_ocl (__global unsigned *in)
 
   in [y * DIM + x] = couleur [yloc / PIX_BLOC][xloc / PIX_BLOC];
 }
+
+// Optimized kernel for pixelization.
+__kernel void pixelize_ocl_opt (__global unsigned *in)
+{
+  __local int4 tile [GPU_TILE_H * GPU_TILE_W];
+  int x = get_global_id (0);
+  int y = get_global_id (1);
+  int loc = get_local_id (1) * GPU_TILE_W + get_local_id (0);
+
+  tile [loc] = color_to_int4 (in [y * DIM + x]);
+  
+  for (int d = (GPU_TILE_W * GPU_TILE_H) >> 1; d > 0; d >>= 1) {
+    barrier (CLK_LOCAL_MEM_FENCE);
+    
+    if (loc < d)
+      tile [loc] += tile [loc + d];
+  }
+  
+  barrier (CLK_LOCAL_MEM_FENCE);
+  
+  in [y * DIM + x] = int4_to_color (tile [0] / (int4) (GPU_TILE_W * GPU_TILE_H));
+}

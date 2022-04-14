@@ -117,6 +117,11 @@ unsigned pixelize_invoke_ocl (unsigned nb_iter)
   return 0;
 }
 
+unsigned pixelize_invoke_ocl_opt (unsigned nb_iter)
+{
+  return pixelize_invoke_ocl(nb_iter);
+}
+
 void pixelize_config_ocl (char *param)
 {
   pixelize_config (param);
