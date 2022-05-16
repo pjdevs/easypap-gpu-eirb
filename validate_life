@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+
+if [ -z $1 ]
+then
+    exit 1
+fi
+
+ITERATIONS="500 1000 5000"
+SIZE=2176
+VERSION="octa_off"
+LIFE_CONFIG=$1
+
+for iter in $ITERATIONS
+do
+    ./run -k life -v $LIFE_CONFIG -s $SIZE -a $VERSION -du -n -i $iter
+
+    TRUTH="dumps/dump-life-seq-dim-$SIZE-iter-$iter.png"
+    GENERATED="dump-life-$LIFE_CONFIG-dim-$SIZE-iter-$iter.png"
+
+    diff $GENERATED $TRUTH
+    equal=$?
+
+    rm $GENERATED
+
+    if [ $equal -ne 0 ]
+    then
+        exit 1
+    fi
+done
+
+exit 0

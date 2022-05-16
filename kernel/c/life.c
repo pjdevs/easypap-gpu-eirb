@@ -57,6 +57,19 @@ void life_refresh_img (void)
       cur_img (i, j) = cur_table (i, j) * color;
 }
 
+// Only called when --dump or --thumbnails is used
+void life_refresh_img_ocl(void)
+{
+  cl_int err;
+
+  err = clEnqueueReadBuffer(queue, cur_buffer, CL_TRUE, 0,
+                            sizeof(unsigned) * DIM * DIM, _table, 0, NULL,
+                            NULL);
+  check(err, "Failed to read buffer from GPU");
+
+  life_refresh_img();
+}
+
 static inline void swap_tables (void)
 {
   cell_t *tmp = _table;
@@ -120,6 +133,38 @@ unsigned life_compute_tiled (unsigned nb_iter)
     for (int y = 0; y < DIM; y += TILE_H)
       for (int x = 0; x < DIM; x += TILE_W)
         change |= do_tile (x, y, TILE_W, TILE_H, 0);
+
+    swap_tables ();
+
+    if (!change) { // we stop if all cells are stable
+      res = it;
+      break;
+    }
+  }
+
+  return res;
+}
+
+// omp tiled version
+unsigned life_compute_omp_tiled (unsigned nb_iter)
+{
+  unsigned res = 0, change = 0, temp = 0;
+
+  for (unsigned it = 1; it <= nb_iter; it++) {
+    change = 0;
+    temp = 0;
+
+    #pragma omp parallel for schedule(runtime) collapse(2) shared(change) private(temp)
+    for (int y = 0; y < DIM; y += TILE_H)
+    {
+      for (int x = 0; x < DIM; x += TILE_W)
+      {
+        temp = do_tile (x, y, TILE_W, TILE_H, omp_get_thread_num());
+
+        #pragma omp critical
+        change |= temp;
+      }
+    }
 
     swap_tables ();
 
