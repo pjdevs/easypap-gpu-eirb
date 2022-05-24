@@ -8,12 +8,14 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <assert.h>
+
 static unsigned color = 0xFFFF00FF; // Living cells have the yellow color
 
 typedef unsigned cell_t;
 
 static cell_t *restrict _table = NULL, *restrict _alternate_table = NULL;
-static unsigned* _changed = NULL;
+static unsigned *restrict _last_changed = NULL, *restrict _next_changed = NULL;
 
 static inline cell_t *table_cell (cell_t *restrict i, int y, int x)
 {
@@ -24,6 +26,8 @@ static inline cell_t *table_cell (cell_t *restrict i, int y, int x)
 // Instead, we use 2D arrays of boolean values, not colors
 #define cur_table(y, x) (*table_cell (_table, (y), (x)))
 #define next_table(y, x) (*table_cell (_alternate_table, (y), (x)))
+#define last_changed_table(y, x) (_last_changed[(y) * (DIM / TILE_H) + (x)])
+#define next_changed_table(y, x) (_next_changed[(y) * (DIM / TILE_H) + (x)])
 
 void life_init (void)
 {
@@ -31,7 +35,7 @@ void life_init (void)
   // already allocated
   if (_table == NULL) {
     const unsigned size = DIM * DIM * sizeof (cell_t);
-    const changed_size = TILE_H * TILE_W * sizeof(unsigned);
+    const unsigned changed_size = (DIM / TILE_H) * (DIM / TILE_W) * sizeof(unsigned);
 
     PRINT_DEBUG ('u', "Memory footprint = 2 x %d bytes (classic) + %d bytes (lazy)\n", size, changed_size);
 
@@ -42,22 +46,28 @@ void life_init (void)
                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
 
-    _changed = mmap (NULL, changed_size, PROT_READ | PROT_WRITE,
+    _last_changed = mmap (NULL, changed_size, PROT_READ | PROT_WRITE,
                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
-    for (unsigned i = 0; i < TILE_H * TILE_W; ++i)
-      _changed[i] = 1;
+    _next_changed = mmap (NULL, changed_size, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    for (unsigned i = 0; i < (changed_size / sizeof(unsigned)); ++i) {
+      _last_changed[i] = 1;
+      _next_changed[i] = 0;
+    }
   }
 }
 
 void life_finalize (void)
 {
   const unsigned size = DIM * DIM * sizeof (cell_t);
-  const changed_size = TILE_H * TILE_W * sizeof(unsigned);
+  const unsigned changed_size = (DIM / TILE_H) * (DIM / TILE_W) * sizeof(unsigned);
 
   munmap (_table, size);
   munmap (_alternate_table, size);
-  munmap (_changed, changed_size);
+  munmap (_last_changed, changed_size);
+  munmap (_next_changed, changed_size);
 }
 
 // This function is called whenever the graphical window needs to be refreshed
@@ -67,35 +77,6 @@ void life_refresh_img (void)
     for (int j = 0; j < DIM; j++)
       cur_img (i, j) = cur_table (i, j) * color;
 }
-
-// unsigned life_invoke_ocl (unsigned nb_iter)
-// {
-//   size_t global[2] = {GPU_SIZE_X, GPU_SIZE_Y};
-//   size_t local[2]  = {GPU_TILE_W, GPU_TILE_H};
-//   cl_int err;
-
-//   monitoring_start_tile (easypap_gpu_lane (TASK_TYPE_COMPUTE));
-
-//   for (unsigned it = 1; it <= nb_iter; it++) {
-
-//     // Set kernel arguments
-//     //
-//     err = 0;//   for (unsigned it = 1; it <= nb_iter; it++) {
-//     err |= clSetKernelArg (compute_kernel, 0, sizeof (cl_mem), &cur_buffer);
-//     err |= clSetKernelArg (compute_kernel, 1, sizeof (cl_mem), &next_buffer);
-//     check (err, "Failed to set kernel arguments");
-
-//     err = clEnqueueNDRangeKernel (queue, compute_kernel, 2, NULL, global, local,
-//                                   0, NULL, NULL);
-//     check (err, "Failed to execute kernel");
-//   }
-
-//   clFinish (queue);
-
-//   monitoring_end_tile (0, 0, DIM, DIM, easypap_gpu_lane (TASK_TYPE_COMPUTE));
-
-//   return 0;
-// }
 
 // Only called when --dump or --thumbnails is used
 void life_refresh_img_ocl(void)
@@ -116,6 +97,11 @@ static inline void swap_tables (void)
 
   _table           = _alternate_table;
   _alternate_table = tmp;
+
+  unsigned* t = _last_changed;
+  
+  _last_changed = _next_changed;
+  _next_changed = t;
 }
 
 ///////////////////////////// Default tiling
@@ -217,9 +203,19 @@ unsigned life_compute_omp_tiled (unsigned nb_iter)
   return res;
 }
 
-int tiles_around_changed()
+unsigned tiles_around_changed(int x, int y)
 {
-  
+  if (last_changed_table(y, x))
+    return 1;
+
+  unsigned changed = 0;
+
+  for (int yloc = y - 1; yloc < y + 2; ++yloc)
+    for (int xloc = x - 1; xloc < x + 2; ++xloc)
+      if (yloc >= 0 && yloc < (DIM / TILE_H) && xloc >= 0 && xloc < (DIM / TILE_W))
+        changed |= last_changed_table(yloc, xloc);
+
+  return changed;
 }
 
 // omp tiled version
@@ -236,10 +232,12 @@ unsigned life_compute_omp_tiled_lazy (unsigned nb_iter)
     {
       for (int x = 0; x < DIM; x += TILE_W)
       {
-        if (tiles_around_changed())
+        temp = tiles_around_changed(x / TILE_W, y / TILE_H);
+
+        if (temp)
           temp = do_tile (x, y, TILE_W, TILE_H, omp_get_thread_num());
 
-        _changed[y + (x / TILE_W)] = temp;
+        next_changed_table(y / TILE_H, x / TILE_W) = temp;
 
         #pragma omp critical
         change |= temp;
