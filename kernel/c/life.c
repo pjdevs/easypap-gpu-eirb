@@ -13,6 +13,7 @@ static unsigned color = 0xFFFF00FF; // Living cells have the yellow color
 typedef unsigned cell_t;
 
 static cell_t *restrict _table = NULL, *restrict _alternate_table = NULL;
+static unsigned* _changed = NULL;
 
 static inline cell_t *table_cell (cell_t *restrict i, int y, int x)
 {
@@ -30,23 +31,33 @@ void life_init (void)
   // already allocated
   if (_table == NULL) {
     const unsigned size = DIM * DIM * sizeof (cell_t);
+    const changed_size = TILE_H * TILE_W * sizeof(unsigned);
 
-    PRINT_DEBUG ('u', "Memory footprint = 2 x %d bytes\n", size);
+    PRINT_DEBUG ('u', "Memory footprint = 2 x %d bytes (classic) + %d bytes (lazy)\n", size, changed_size);
 
     _table = mmap (NULL, size, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
     _alternate_table = mmap (NULL, size, PROT_READ | PROT_WRITE,
                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+
+    _changed = mmap (NULL, changed_size, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    for (unsigned i = 0; i < TILE_H * TILE_W; ++i)
+      _changed[i] = 1;
   }
 }
 
 void life_finalize (void)
 {
   const unsigned size = DIM * DIM * sizeof (cell_t);
+  const changed_size = TILE_H * TILE_W * sizeof(unsigned);
 
   munmap (_table, size);
   munmap (_alternate_table, size);
+  munmap (_changed, changed_size);
 }
 
 // This function is called whenever the graphical window needs to be refreshed
@@ -56,6 +67,35 @@ void life_refresh_img (void)
     for (int j = 0; j < DIM; j++)
       cur_img (i, j) = cur_table (i, j) * color;
 }
+
+// unsigned life_invoke_ocl (unsigned nb_iter)
+// {
+//   size_t global[2] = {GPU_SIZE_X, GPU_SIZE_Y};
+//   size_t local[2]  = {GPU_TILE_W, GPU_TILE_H};
+//   cl_int err;
+
+//   monitoring_start_tile (easypap_gpu_lane (TASK_TYPE_COMPUTE));
+
+//   for (unsigned it = 1; it <= nb_iter; it++) {
+
+//     // Set kernel arguments
+//     //
+//     err = 0;//   for (unsigned it = 1; it <= nb_iter; it++) {
+//     err |= clSetKernelArg (compute_kernel, 0, sizeof (cl_mem), &cur_buffer);
+//     err |= clSetKernelArg (compute_kernel, 1, sizeof (cl_mem), &next_buffer);
+//     check (err, "Failed to set kernel arguments");
+
+//     err = clEnqueueNDRangeKernel (queue, compute_kernel, 2, NULL, global, local,
+//                                   0, NULL, NULL);
+//     check (err, "Failed to execute kernel");
+//   }
+
+//   clFinish (queue);
+
+//   monitoring_end_tile (0, 0, DIM, DIM, easypap_gpu_lane (TASK_TYPE_COMPUTE));
+
+//   return 0;
+// }
 
 // Only called when --dump or --thumbnails is used
 void life_refresh_img_ocl(void)
@@ -160,6 +200,46 @@ unsigned life_compute_omp_tiled (unsigned nb_iter)
       for (int x = 0; x < DIM; x += TILE_W)
       {
         temp = do_tile (x, y, TILE_W, TILE_H, omp_get_thread_num());
+
+        #pragma omp critical
+        change |= temp;
+      }
+    }
+
+    swap_tables ();
+
+    if (!change) { // we stop if all cells are stable
+      res = it;
+      break;
+    }
+  }
+
+  return res;
+}
+
+int tiles_around_changed()
+{
+  
+}
+
+// omp tiled version
+unsigned life_compute_omp_tiled_lazy (unsigned nb_iter)
+{
+  unsigned res = 0, change = 0, temp = 0;
+
+  for (unsigned it = 1; it <= nb_iter; it++) {
+    change = 0;
+    temp = 0;
+
+    #pragma omp parallel for schedule(runtime) collapse(2) shared(change) private(temp)
+    for (int y = 0; y < DIM; y += TILE_H)
+    {
+      for (int x = 0; x < DIM; x += TILE_W)
+      {
+        if (tiles_around_changed())
+          temp = do_tile (x, y, TILE_W, TILE_H, omp_get_thread_num());
+
+        _changed[y + (x / TILE_W)] = temp;
 
         #pragma omp critical
         change |= temp;
