@@ -17,7 +17,7 @@ def openfile(path="./plots/data/perf_data.csv", sepa=";"):
         print("File not found: ", path, file=sys.stderr)
         sys.exit(1)
 
-# Donne tous les champs de df qui ne sont pas listés
+# Donne tous les champs de df qui ne sont pas listï¿½s
 
 
 def complementaryCols(listeAttr, df):
@@ -485,3 +485,6 @@ def savePlotAsPDF(fig):
     pp = PdfPages(args.output)
     plt.savefig(pp, format='pdf')
     pp.close()
+
+def savePlotAsPNG(fig):
+    plt.savefig(args.output, format='png')

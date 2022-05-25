@@ -22,4 +22,5 @@ sns.set(style="darkgrid", rc={'text.usetex': False,
 # Creation du graphe :
 fig = easyPlotDataFrame(df=df, args=args)
 
-savePlotAsPDF(fig)
+# savePlotAsPDF(fig)
+savePlotAsPNG(fig)

@@ -203,6 +203,37 @@ unsigned life_compute_omp_tiled (unsigned nb_iter)
   return res;
 }
 
+// One parallel section with barrier and single (a little bit less efficient)
+unsigned life_compute_omp_tiled_barrier (unsigned nb_iter)
+{
+  unsigned res = 0, change = 0, temp = 0;
+
+  #pragma omp parallel shared(change) private(temp)
+  for (unsigned it = 1; it <= nb_iter; it++) {
+    change = 0;
+    temp = 0;
+
+    #pragma omp for schedule(runtime) collapse(2)
+    for (int y = 0; y < DIM; y += TILE_H)
+    {
+      for (int x = 0; x < DIM; x += TILE_W)
+      {
+        temp = do_tile (x, y, TILE_W, TILE_H, omp_get_thread_num());
+
+        #pragma omp critical
+        change |= temp;
+      }
+    }
+
+    #pragma omp barrier
+
+    #pragma omp single
+    swap_tables ();
+  }
+
+  return res;
+}
+
 unsigned tiles_around_changed(int x, int y)
 {
   if (last_changed_table(y, x))
