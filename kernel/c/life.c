@@ -78,6 +78,78 @@ void life_refresh_img (void)
       cur_img (i, j) = cur_table (i, j) * color;
 }
 
+cl_mem last_changed_buffer = 0, next_changed_buffer = 0;
+
+void life_init_ocl_lazy (void)
+{
+  life_init();
+
+  const size_t changed_size = (DIM / TILE_W) * (DIM / TILE_H) * sizeof (unsigned);
+
+  last_changed_buffer = clCreateBuffer (context, CL_MEM_READ_WRITE, changed_size, NULL, NULL);
+  if (!last_changed_buffer)
+    exit_with_error ("Failed to allocate last_changed_buffer");
+
+  next_changed_buffer = clCreateBuffer (context, CL_MEM_READ_WRITE, changed_size, NULL, NULL);  
+  if (!next_changed_buffer)
+    exit_with_error ("Failed to allocate next_changed_buffer");
+
+  cl_int err;
+
+  unsigned *tmp = malloc(changed_size);
+
+  for (unsigned i = 0; i < ((DIM / TILE_W) * (DIM / TILE_H)); ++i)
+    tmp[i] = 1;
+
+  err = clEnqueueWriteBuffer (queue, last_changed_buffer, CL_TRUE, 0,
+                              changed_size, tmp, 0, NULL, NULL);
+  check (err, "Failed to write to last_changed_buffer");
+
+  free(tmp);
+}
+
+unsigned life_invoke_ocl_lazy (unsigned nb_iter)
+{
+  size_t global[2] = {GPU_SIZE_X, GPU_SIZE_Y}; // global domain size for our calculation
+  size_t local[2]  = {GPU_TILE_W, GPU_TILE_H}; // local domain size for our calculation
+  cl_int err;
+
+  monitoring_start_tile (easypap_gpu_lane (TASK_TYPE_COMPUTE));
+
+  for (unsigned it = 1; it <= nb_iter; it++) {
+    // Set kernel arguments
+    //
+    err = 0;
+    err |= clSetKernelArg (compute_kernel, 0, sizeof (cl_mem), &cur_buffer);
+    err |= clSetKernelArg (compute_kernel, 1, sizeof (cl_mem), &next_buffer);
+    err |= clSetKernelArg (compute_kernel, 2, sizeof (cl_mem), &last_changed_buffer);
+    err |= clSetKernelArg (compute_kernel, 3, sizeof (cl_mem), &next_changed_buffer);
+
+    check (err, "Failed to set kernel arguments");
+
+    err = clEnqueueNDRangeKernel (queue, compute_kernel, 2, NULL, global, local,
+                                  0, NULL, NULL);
+    check (err, "Failed to execute kernel");
+
+    // Swap buffers
+    {
+      cl_mem tmp  = cur_buffer;
+      cur_buffer = next_buffer;
+      next_buffer = tmp;
+
+      tmp = last_changed_buffer;
+      last_changed_buffer = next_changed_buffer;
+      next_changed_buffer = tmp;
+    }
+  }
+
+  clFinish (queue);
+
+  monitoring_end_tile (0, 0, DIM, DIM, easypap_gpu_lane (TASK_TYPE_COMPUTE));
+
+  return 0;
+}
+
 // Only called when --dump or --thumbnails is used
 void life_refresh_img_ocl(void)
 {
@@ -229,6 +301,43 @@ unsigned life_compute_omp_tiled_barrier (unsigned nb_iter)
 
     #pragma omp single
     swap_tables ();
+  }
+
+  return res;
+}
+
+// One parallel section with one thread gving task to others and a barrier before swap
+unsigned life_compute_omp_tiled_task (unsigned nb_iter)
+{
+  unsigned res = 0, change = 0, temp = 0;
+
+  #pragma omp parallel shared(change, res) private(temp)
+  #pragma omp single
+  for (unsigned it = 1; it <= nb_iter; it++) {
+    change = 0;
+    temp = 0;
+
+    for (int y = 0; y < DIM; y += TILE_H)
+    {
+      for (int x = 0; x < DIM; x += TILE_W)
+      {
+        #pragma omp task
+        {
+          temp = do_tile (x, y, TILE_W, TILE_H, omp_get_thread_num());
+          #pragma omp critical
+          change |= temp;
+        }
+      }
+    }
+
+    #pragma omp taskwait
+
+    swap_tables ();
+
+    if (!change) { // we stop if all cells are stable
+      res = it;
+      it = nb_iter;
+    }
   }
 
   return res;
