@@ -84,7 +84,7 @@ void life_init_ocl_lazy (void)
 {
   life_init();
 
-  const size_t changed_size = (DIM / TILE_W) * (DIM / TILE_H) * sizeof (unsigned);
+  const size_t changed_size = (GPU_SIZE_X / GPU_TILE_W) * (GPU_SIZE_Y / GPU_TILE_H) * sizeof (unsigned);
 
   last_changed_buffer = clCreateBuffer (context, CL_MEM_READ_WRITE, changed_size, NULL, NULL);
   if (!last_changed_buffer)
@@ -98,7 +98,7 @@ void life_init_ocl_lazy (void)
 
   unsigned *tmp = malloc(changed_size);
 
-  for (unsigned i = 0; i < ((DIM / TILE_W) * (DIM / TILE_H)); ++i)
+  for (unsigned i = 0; i < changed_size / sizeof(unsigned); ++i)
     tmp[i] = 1;
 
   err = clEnqueueWriteBuffer (queue, last_changed_buffer, CL_TRUE, 0,
@@ -292,7 +292,7 @@ unsigned life_compute_omp_tiled_barrier (unsigned nb_iter)
       {
         temp = do_tile (x, y, TILE_W, TILE_H, omp_get_thread_num());
 
-        #pragma omp critical
+        #pragma omp atomic
         change |= temp;
       }
     }
@@ -324,7 +324,7 @@ unsigned life_compute_omp_tiled_task (unsigned nb_iter)
         #pragma omp task
         {
           temp = do_tile (x, y, TILE_W, TILE_H, omp_get_thread_num());
-          #pragma omp critical
+          #pragma omp atomic
           change |= temp;
         }
       }
@@ -379,7 +379,7 @@ unsigned life_compute_omp_tiled_lazy (unsigned nb_iter)
 
         next_changed_table(y / TILE_H, x / TILE_W) = temp;
 
-        #pragma omp critical
+        #pragma omp atomic
         change |= temp;
       }
     }

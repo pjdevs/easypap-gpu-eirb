@@ -28,41 +28,44 @@ __kernel void life_ocl_lazy (__global unsigned *in, __global unsigned *out, __gl
   int xloc = get_local_id (0);
   int yloc = get_local_id (1);
 
-  if (y <= 0 && y >= DIM - 1 && x <= 0 && x >= DIM - 1)
-    return;
-
   local unsigned changed;
 
   if (xloc == 0 && yloc == 0) {
     changed = 0;
 
-    for (yloc = y - 1; yloc < y + 2; ++yloc)
-      for (xloc = x - 1; xloc < x + 2; ++xloc)
-        if (yloc >= 0 && yloc < (DIM / GPU_TILE_H) && xloc >= 0 && xloc < (DIM / GPU_TILE_W))
-          changed |= last_changed[yloc * (DIM / GPU_TILE_H) + xloc];
+    for (yloc = tile_y - 1; yloc < tile_y + 2; ++yloc)
+      for (xloc = tile_x - 1; xloc < tile_x + 2; ++xloc)
+        if (yloc >= 0 && yloc < (GPU_SIZE_Y / GPU_TILE_H) && xloc >= 0 && xloc < (GPU_SIZE_Y / GPU_TILE_W))
+          changed |= last_changed[yloc * (GPU_SIZE_Y / GPU_TILE_H) + xloc];
 
-    changed |= last_changed[tile_y * (DIM / GPU_TILE_H) + tile_x];
+    changed |= last_changed[tile_y * (GPU_SIZE_Y / GPU_TILE_H) + tile_x];
   }
 
-  barrier(CLK_LOCAL_MEM_FENCE);
+  barrier (CLK_LOCAL_MEM_FENCE);
 
   if (!changed) {
     return;
   }
 
-  unsigned n  = 0;
-  unsigned me = in[y * DIM + x];
+  if (y > 0 && y < DIM - 1 && x > 0 && x < DIM - 1) {
+    unsigned n  = 0;
+    unsigned me = in[y * DIM + x];
 
-  for (yloc = y - 1; yloc < y + 2; yloc++)
-    for (xloc = x - 1; xloc < x + 2; xloc++)
-      n += in[yloc * DIM + xloc];
+    for (int yloc = y - 1; yloc < y + 2; yloc++)
+      for (int xloc = x - 1; xloc < x + 2; xloc++)
+        n += in[yloc * DIM + xloc];
 
-  n = (n == 3 + me) | (n == 3);
+    n = (n == 3 + me) | (n == 3);
 
-  out[y * DIM + x] = n;
+    out[y * DIM + x] = n;
 
-  volatile __global unsigned* changed_ptr = next_changed + tile_y * (DIM / GPU_TILE_H) + tile_x; 
-  atomic_or(changed_ptr, n != me);
+    volatile __global unsigned* changed_ptr = next_changed + tile_y * (GPU_SIZE_Y / GPU_TILE_H) + tile_x; 
+    atomic_or(changed_ptr, n != me);
+  }
+  else {
+    volatile __global unsigned* changed_ptr = next_changed + tile_y * (GPU_SIZE_Y / GPU_TILE_H) + tile_x; 
+    atomic_or(changed_ptr, 0);
+  }
 }
 
 // DO NOT MODIFY: this kernel updates the OpenGL texture buffer
